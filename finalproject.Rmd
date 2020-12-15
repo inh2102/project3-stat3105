@@ -1,0 +1,286 @@
+---
+title: "Project 3 - R and Python (reticulate-r) Code"
+author: "Isaac Horwitz (inh2102)"
+date: "12/14/2020"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r}
+library(reticulate)
+library(tidyverse)
+```
+
+```{r,eval=FALSE}
+## PYTHON
+#py_install('newsapi-python',pip=TRUE)
+from newsapi import NewsApiClient
+import pandas as pd
+newsapi = NewsApiClient(api_key='fcbe5d3b724d4b4c9f4b12a1e2a22c3b')
+source_choice = 'bbc-news'
+headlines = newsapi.get_top_headlines(sources=source_choice,language='en')
+headlines = headlines['articles']
+headlines = pd.DataFrame.from_dict(headlines)
+```
+
+```{r bbc-news,eval=FALSE}
+py$headlines %>% tibble() %>% mutate(source=unlist(source)[[2]]) %>% select(-source,-author)
+```
+
+```{r nytimes,eval=FALSE}
+url <- "https://api.nytimes.com/svc/archive/v1/2020/12.json?api-key=0mmGvRm2j0WuaypYAEP9zlE8Zra6lXcn" 
+nytimes <- jsonlite::fromJSON(url,flatten=TRUE) %>% as.data.frame()
+nytimes <- tibble(nytimes[!duplicated(nytimes$response.docs._id),])
+nytimes %>% select(response.docs.headline.main,response.docs.pub_date)
+```
+
+```{r,eval=FALSE}
+py$headlines %>% tibble() %>% mutate(source=unlist(source)[[2]]) %>% .[3,] %>% select(title)
+# When initially running this, this produced “Inside a vaccine cold storage room”	
+```
+
+```{r,eval=FALSE}
+nytimes$response.docs.headline.main[1852]
+# When initially running this, this produced “The C.D.C. formally approves allowing people 16 and up to receive the vaccine"
+```
+
+```{r package-data,warning=FALSE,message=FALSE}
+library(tidyverse,warn.conflicts=FALSE)
+library(scales,warn.conflicts=FALSE)
+library(grid,warn.conflicts=FALSE)
+library(gridExtra,warn.conflicts=FALSE)
+options(dplyr.summarise.inform = FALSE)
+setwd("~/Downloads")
+set.seed(111820)
+news <- read.csv("News_Final.csv") %>% tibble() # DATA ON NEWS ITEMS
+private <- news %>% filter(Source %in% c('Bloomberg','Reuters','ABC News','New York Times','Business Insider','Economic Times','Forbes',
+                                         'Washington Post','CNN','Wall Street Journal','CNBC','Huffington Post','Breitbart News',
+                                         'Reuters via Yahoo! Finance','The Hill','Financial Times','USA TODAY','Foxo News','Washington Times',
+                                         'Daily Caller','Los Angeles Times','Fortune','Politico','The Wall Street Journal','New York Post',
+                                         'The Verge'))
+private <- sample_n(private,794)
+
+public_list <- c('NPR','PBS NewsHour','Democracy Now!','Texas Tribune','KPBS','MinnPost','Mother Jones',
+                 'KPBS San Diego','PolitiFact','The Forward','Salt Lake Tribune','The Salt Lake Tribune')
+
+public <- news %>% filter(Source %in% public_list)
+```
+
+```{r,warning=FALSE,message=FALSE}
+## SAMPLE PRIVATE AND PUBLIC
+
+set.seed(111820)
+p_sample <- sample_n(private,400)
+pub_sample <- sample_n(public,400)
+setwd("~/Downloads")
+pub_sample_labeled <- read_csv("public_sample.csv")
+pub_sample_labeled$sentiment %>% summary()
+pub_sample_labeled$episodic %>% summary()
+
+priv_sample_labeled <- read_csv("private_sample.csv") %>% filter(!is.na(sentiment))
+priv_sample_labeled$sentiment %>% summary()
+priv_sample_labeled$episodic %>% summary()
+
+episodic <- bind_rows(pub_sample_labeled,priv_sample_labeled) %>% count(episodic,status)
+ggplot(data=episodic,aes(x=factor(episodic),y=n,fill=status)) + 
+  geom_bar(position='dodge',stat='identity') +
+  labs(x='framing',y='articles',title='Thematic vs. Episodic Frame in Labeled Articles') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("thematic","episodic")) + 
+  theme(plot.title=element_text(hjust=0.5)) + 
+  geom_errorbar(aes(ymin=n-sd(n),ymax=n+sd(n)),
+                width=0.2,position=position_dodge(0.9))
+```
+
+```{r,warning=FALSE}
+pub_and_private <- bind_rows(pub_sample_labeled,priv_sample_labeled)
+m1 <- glm(data=pub_and_private,episodic~status+SentimentTitle+Topic,family='binomial')
+m2 <- glm(data=pub_and_private,episodic~status,family='binomial')
+chisq <- anova(m1,test='Chisq') # run for m2 as well
+nullmod <- glm(data=pub_and_private,episodic~1, family="binomial")
+pseduo.Rsquared <- 1-logLik(m1)/logLik(nullmod) # run for m2 as well
+pseduo.Rsquared
+pub_and_private$pred <- predict(m1,type = "response",newdata=pub_and_private) # run for m2 as well
+pub_and_private$pred_binary <- ifelse(pub_and_private$pred>=0.5,1,0) # run for m2 as well
+
+with(pub_and_private,prop.table(table(pred_binary==episodic)))
+
+episodic <- pub_and_private %>% count(episodic,status)
+p1 <- ggplot(data=episodic,aes(x=factor(episodic),y=n,fill=status)) + 
+  geom_bar(position='dodge',stat='identity') +
+  labs(x='framing',y="# 'episodic' articles",title='Actual') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("thematic","episodic"))
+
+pred_episodic <- pub_and_private %>% count(pred_binary,status)
+p2 <- ggplot(data=pred_episodic,aes(x=factor(pred_binary),y=n,fill=status)) + 
+  geom_bar(position='dodge',stat='identity') +
+  labs(x='framing',y=" # 'episodic' articles",title='Predicted') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("thematic","episodic"))
+gridExtra::grid.arrange(p1,p2,nrow=1)
+```
+
+```{r,warning=FALSE,message=FALSE}
+news["Hour"] <- substr(news$PublishDate,12,13)
+news$Hour <- as.numeric(news$Hour)
+
+episodic <- pub_and_private[pub_and_private$episodic==1,]
+thematic <- pub_and_private[pub_and_private$episodic==0,]
+
+### NEWS PER TOPIC/DAY
+
+episodic_news_topic <- episodic[,c("PublishDate","Topic")]
+episodic_news_topic$PublishDate <- lubridate::parse_date_time(episodic_news_topic$PublishDate,orders='m/d/y/hm')
+
+thematic_news_topic <- thematic[,c("PublishDate","Topic")]
+thematic_news_topic$PublishDate <- lubridate::parse_date_time(thematic_news_topic$PublishDate,orders='m/d/y/hm')
+
+## Graph with number of news per topic per day
+episodic_news_topic$Week <- lubridate::week(episodic_news_topic$PublishDate)
+week <- rep(NA,nrow(episodic_news_topic))
+for (i in 1:length(episodic_news_topic$Week)) {
+  if (grepl("2016",episodic_news_topic$PublishDate[i])) {
+  week[i] <- as.character(MMWRweek::MMWRweek2Date(MMWRyear = 2016,MMWRweek = episodic_news_topic$Week[i],MMWRday = 1))
+  }
+  if (grepl("2015",episodic_news_topic$PublishDate[i])) {
+    week[i] <- as.character(MMWRweek::MMWRweek2Date(MMWRyear = 2015,MMWRweek = episodic_news_topic$Week[i],MMWRday = 1))
+  }
+}
+week <- as.Date(week)
+episodic_news_topic$Week <- week
+
+thematic_news_topic$Week <- lubridate::week(thematic_news_topic$PublishDate)
+week <- rep(NA,nrow(thematic_news_topic))
+for (i in 1:length(thematic_news_topic$Week)) {
+  if (grepl("2016",thematic_news_topic$PublishDate[i])) {
+  week[i] <- as.character(MMWRweek::MMWRweek2Date(MMWRyear = 2016,MMWRweek = thematic_news_topic$Week[i],MMWRday = 1))
+  }
+  if (grepl("2015",thematic_news_topic$PublishDate[i])) {
+    week[i] <- as.character(MMWRweek::MMWRweek2Date(MMWRyear = 2015,MMWRweek = thematic_news_topic$Week[i],MMWRday = 1))
+  }
+}
+week <- as.Date(week)
+thematic_news_topic$Week <- week
+
+nrEpisodicNewsTopicDay <- episodic_news_topic %>% group_by(Topic,Week) %>% filter(PublishDate > "2015-11-09")  %>% filter(PublishDate < "2016-07-08") %>% summarize(nrNews=n()) %>% arrange(Week)
+nrEpisodicNewsTopicDay$Week <- as.Date(nrEpisodicNewsTopicDay$Week,origin='1970-01-01')
+
+plot.nrEpisodicNews_daily <- ggplot(nrEpisodicNewsTopicDay,aes(x=Week,y=nrNews,group=Topic,color=fct_reorder(Topic,-nrNews))) +
+  geom_smooth(se=F) + scale_x_date(labels=date_format("%m-%Y"),breaks=date_breaks("month")) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_discrete(name = "Topic") + labs(y="Headlines",title="Episodic Headlines by Topic") + scale_y_continuous(breaks=breaks_pretty()) +
+  theme(plot.title=element_text(hjust=0.5))
+
+nrThematicNewsTopicDay <- thematic_news_topic %>% group_by(Topic,Week) %>% filter(PublishDate > "2015-11-09")  %>% filter(PublishDate < "2016-07-08") %>% summarize(nrNews=n()) %>% arrange(Week)
+nrThematicNewsTopicDay$Week <- as.Date(nrThematicNewsTopicDay$Week,origin='1970-01-01')
+
+plot.nrThematicNews_daily <- ggplot(nrThematicNewsTopicDay,aes(x=Week,y=nrNews,group=Topic,color=fct_reorder(Topic,-nrNews))) +
+  geom_smooth(se=F) + scale_x_date(labels=date_format("%m-%Y"),breaks=date_breaks("month")) + theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_color_discrete(name = "Topic") + labs(y="Headlines",title="Thematic Headlines by Topic") + scale_y_continuous(breaks=breaks_pretty()) +
+  theme(plot.title=element_text(hjust=0.5))
+
+grid.arrange(plot.nrEpisodicNews_daily,
+             plot.nrThematicNews_daily,
+             ncol=2)
+```
+
+```{r}
+# very slightly modified from this for paper
+plot.data <- bind_rows(pub_sample_labeled,priv_sample_labeled) %>% count(episodic,Topic)
+ggplot(data=plot.data,aes(x=factor(episodic),y=n,fill=Topic)) + 
+  geom_bar(position='stack',stat='identity') +
+  labs(x='framing',y='count',title='Topic Distribution of Episodic and Thematic Articles',fill='topic') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("0","1")) + 
+  theme(plot.title=element_text(hjust=0.5))
+```
+
+```{r}
+summarytools::freq(pub_sample_labeled$Source, report.nas = FALSE, totals = FALSE, 
+     cumul = FALSE, headings = FALSE,order='freq',display.type=FALSE)
+```
+
+```{r}
+summarytools::freq(priv_sample_labeled$Source, report.nas = FALSE, totals = FALSE, 
+     cumul = FALSE, headings = FALSE,order='freq',display.type=FALSE)
+```
+
+```{r nlp eda,warning=FALSE,message=FALSE}
+library(tidytext,warn.conflicts=FALSE)
+library(tm,warn.conflicts=FALSE)
+library(quanteda,warn.conflicts=FALSE)
+library(doMC,warn.conflicts=FALSE)
+library(rtweet,warn.conflicts=FALSE)
+library(text2vec,warn.conflicts=FALSE)
+library(glmnet,warn.conflicts=FALSE)
+
+train_ind <- sample(seq_len(nrow(pub_and_private)),size=0.8*nrow(pub_and_private))
+
+pub_and_private <- pub_and_private[train_ind,]
+testing <- pub_and_private[-train_ind,]
+
+pub_priv_clean <- pub_and_private %>% 
+  mutate(Title = tolower(Title),
+         Title = gsub("[[:punct:]]", "",Title),
+         Title = gsub("\\r|\\n"," ",Title),
+         Title = plain_tweets(Title))
+registerDoMC(cores=3)
+stem_tokenizer =function(x) {
+lapply(word_tokenizer(x), SnowballC::wordStem, language="en")
+}
+stopwords <- stopwords::stopwords()
+toks <- itoken(pub_priv_clean$Title, 
+             tokenizer = stem_tokenizer, 
+             ids = pub_priv_clean$IDLink, 
+             progressbar = FALSE)
+vocab <- create_vocabulary(toks,ngram = c(1L, 2L),stopwords=stopwords)
+
+vectorizer = vocab_vectorizer(vocab)
+dtm = create_dtm(toks, vectorizer)
+dim(dtm)
+
+glmnet_classifier = cv.glmnet(x = dtm, y = pub_and_private$episodic, 
+                              family = 'binomial', 
+                              # L1 penalty
+                              alpha = 1,
+                              # interested in the area under ROC curve
+                              type.measure = "auc",
+                              # 5-fold cross-validation
+                              nfolds = 4,
+                              # high value is less accurate, but has faster training
+                              thresh = 1e-3,
+                              # again lower number of iterations for faster training
+                              maxit = 1e3)
+
+coef(glmnet_classifier,glmnet_classifier$lambda.min)  %>% tidy() %>% arrange(value)-> coef_df
+
+test_clean <- testing %>% 
+  mutate(Title = tolower(Title),
+         Title = gsub("[[:punct:]]", "",Title),
+         Title = gsub("\\r|\\n"," ",Title),
+         Title = plain_tweets(Title))
+
+test_toks <- itoken(test_clean$Title, 
+             tokenizer = stem_tokenizer, 
+             ids = test_clean$IDLink, 
+             progressbar = FALSE)
+
+test_dtm = create_dtm(test_toks, vectorizer)
+
+preds = predict(glmnet_classifier, test_dtm, type = 'class')[,1] %>% as.numeric()
+testing$text_pred <- preds
+real_dummy <- testing$episodic
+caret::confusionMatrix(factor(real_dummy),factor(preds))
+prop.table(table(real_dummy==preds))
+
+episodic <- testing %>% count(episodic,status)
+p1 <- ggplot(data=episodic,aes(x=factor(episodic),y=n,fill=status)) + 
+  geom_bar(position='dodge',stat='identity') +
+  labs(x='framing',y="# 'episodic' articles",title='Actual') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("thematic","episodic"))
+
+pred_episodic <- testing %>% count(text_pred,status)
+p2 <- ggplot(data=pred_episodic,aes(x=factor(text_pred),y=n,fill=status)) + 
+  geom_bar(position='dodge',stat='identity') +
+  labs(x='framing',y="# 'episodic' articles",title='Predicted') +
+  scale_x_discrete(breaks=c("0","1"),labels=c("thematic","episodic"))
+gridExtra::grid.arrange(p1,p2,nrow=1)
+```
